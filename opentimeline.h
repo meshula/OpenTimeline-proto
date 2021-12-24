@@ -311,8 +311,8 @@ void test_opentime() {
 
 typedef struct { uint32_t id; } IntervalOidId;
 const IntervalOidId IntervalOidId_default = { 0 };
-struct TimelineTopology;
-typedef struct TimelineTopology TimelineTopology;
+struct TimelineTopologyInterface;
+typedef struct TimelineTopologyInterface TimelineTopologyInterface;
 
 typedef struct {
     IntervalOidId self;
@@ -325,16 +325,18 @@ const IntervalOid IntervalOid_default = {{0}, {0}, {0}, {{0}, {INFINITY}}};
 struct TimelineTopologyDetail;
 typedef struct TimelineTopologyDetail TimelineTopologyDetail;
 
-struct TimelineTopology {
+struct TimelineTopologyInterface {
     IntervalOid timeline_root;
 
-    void (*deinit)(TimelineTopology* self);
-    IntervalOidId (*new_oid)(TimelineTopology* self);
-    void (*add_sync)(TimelineTopology* self, IntervalOidId parent, IntervalOidId);
-    void (*add_seq)(TimelineTopology* self, IntervalOidId parent, IntervalOidId);
-    void (*add_syncs)(TimelineTopology* self, IntervalOidId parent, 
+    void (*deinit)(TimelineTopologyInterface* self);
+
+    IntervalOidId (*new_oid)(TimelineTopologyInterface* self);
+    
+    void (*add_sync)(TimelineTopologyInterface* self, IntervalOidId parent, IntervalOidId);
+    void (*add_seq)(TimelineTopologyInterface* self, IntervalOidId parent, IntervalOidId);
+    void (*add_syncs)(TimelineTopologyInterface* self, IntervalOidId parent, 
             IntervalOidId* first, IntervalOidId* last);
-    void (*add_seqs)(TimelineTopology* self, IntervalOidId parent, 
+    void (*add_seqs)(TimelineTopologyInterface* self, IntervalOidId parent, 
             IntervalOidId* first, IntervalOidId* last);
     
     TimelineTopologyDetail* detail;
@@ -345,7 +347,7 @@ typedef struct {
     void (*free)(void*);
 } TimelineAllocator;
 
-TimelineTopology*
+TimelineTopologyInterface*
 timeline_topology_create(
         int initial_capacity,
         TimelineAllocator*);
@@ -364,7 +366,7 @@ struct TimelineTopologyDetail {
     int last_available;
 };
 
-static void topo_deinit(TimelineTopology* self) {
+static void topo_deinit(TimelineTopologyInterface* self) {
     if (!self || !self->detail)
         return;
 
@@ -378,7 +380,7 @@ static void topo_deinit(TimelineTopology* self) {
     freeFn(self);
 }
 
-static IntervalOidId topo_new_oid(TimelineTopology* self) {
+static IntervalOidId topo_new_oid(TimelineTopologyInterface* self) {
     if (!self)
         return IntervalOidId_default;
 
@@ -390,7 +392,7 @@ static IntervalOidId topo_new_oid(TimelineTopology* self) {
     return result;
 }
 
-static void topo_add_sync(TimelineTopology* self, 
+static void topo_add_sync(TimelineTopologyInterface* self, 
         IntervalOidId parent, IntervalOidId child) {
     if (!self)
         return;
@@ -402,7 +404,7 @@ static void topo_add_sync(TimelineTopology* self,
     detail->timeline_data[parent.id].sync = child;
 }
 
-static void topo_add_seq(TimelineTopology* self, 
+static void topo_add_seq(TimelineTopologyInterface* self, 
         IntervalOidId parent, IntervalOidId child) {
     if (!self)
         return;
@@ -414,7 +416,7 @@ static void topo_add_seq(TimelineTopology* self,
     detail->timeline_data[parent.id].seq = child;
 }
 
-static void topo_add_seqs(TimelineTopology* self, 
+static void topo_add_seqs(TimelineTopologyInterface* self, 
         IntervalOidId parent, IntervalOidId* first, IntervalOidId* last) {
     if (!self || !first || !last)
         return;
@@ -430,7 +432,7 @@ static void topo_add_seqs(TimelineTopology* self,
     }
 }
 
-static void topo_add_syncs(TimelineTopology* self, 
+static void topo_add_syncs(TimelineTopologyInterface* self, 
         IntervalOidId parent, IntervalOidId* first, IntervalOidId* last) {
     if (!self || !first || !last)
         return;
@@ -446,7 +448,7 @@ static void topo_add_syncs(TimelineTopology* self,
     }
 }
 
-TimelineTopology* 
+TimelineTopologyInterface* 
 timeline_topology_create(
         int initial_capacity,
         TimelineAllocator* alloc) {
@@ -454,8 +456,8 @@ timeline_topology_create(
     if (!alloc)
         return NULL;
 
-    TimelineTopology* topo = 
-        (TimelineTopology*) alloc->malloc(sizeof(TimelineTopology));
+    TimelineTopologyInterface* topo = 
+        (TimelineTopologyInterface*) alloc->malloc(sizeof(TimelineTopologyInterface));
     if (!topo)
         return NULL;
 
@@ -488,7 +490,7 @@ timeline_topology_create(
 
 void test_creation() {
     TimelineAllocator alloc = { .malloc = malloc, .free = free };
-    TimelineTopology* topo = timeline_topology_create(100, &alloc);
+    TimelineTopologyInterface* topo = timeline_topology_create(100, &alloc);
     
     IntervalOidId audio_track = topo->new_oid(topo);
     IntervalOidId video_track = topo->new_oid(topo);
