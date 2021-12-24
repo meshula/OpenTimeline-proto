@@ -318,9 +318,13 @@ typedef struct {
     IntervalOidId self;
     IntervalOidId seq;
     IntervalOidId sync;
-    OT_TimeInterval ti;
+    OT_TimeAffineTransform basis;
+    OT_TimeInterval bounds;
+    //OT_TImeCurve mapping;
 } IntervalOid;
-const IntervalOid IntervalOid_default = {{0}, {0}, {0}, {{0}, {INFINITY}}};
+const IntervalOid IntervalOid_default = {{0}, {0}, {0},
+    { {0}, 1.f }, 
+    {{0}, {INFINITY}}};
 
 struct TimelineTopologyDetail;
 typedef struct TimelineTopologyDetail TimelineTopologyDetail;
@@ -470,7 +474,7 @@ timeline_topology_create(
     memset(detail->timeline_data, 0, sizeof(IntervalOid) * (1 + initial_capacity));
     for (int i = 0; i < initial_capacity; ++i) {
         detail->timeline_data[i].self.id = i;
-        detail->timeline_data[i].ti = OT_TimeInterval_default;
+        detail->timeline_data[i].bounds = OT_TimeInterval_default;
     }
 
     topo->detail = (void*) detail;
