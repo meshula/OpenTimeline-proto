@@ -2,6 +2,8 @@
 #define TESTING
 
 //------- opentime.h starts here
+#ifndef OPENTIME_PROTO_H
+#define OPENTIME_PROTO_H
 
 #include <math.h>
 #include <stdbool.h>
@@ -61,6 +63,8 @@ typedef struct {
 } OpenTimeAllocator;
 
 OpenTimeInterface* opentime_create(OpenTimeAllocator*);
+
+#endif // OPENTIME_PROTO_H
 
 #define IMPL_OPENTIME
 #ifdef IMPL_OPENTIME
@@ -303,6 +307,75 @@ void test_opentime() {
 
 
 #endif // IMPL_OPENTIME
+
+//------- curve.h starts here
+
+#ifndef OPENTIME_CURVE_H
+#define OPENTIME_CURVE_H
+
+typedef struct {
+    OT_seconds time;
+    OT_seconds value;
+} OT_ControlPoint;
+
+OT_ControlPoint OT_mul_cp(OT_ControlPoint cp, float val);
+OT_ControlPoint OT_add_cp(OT_ControlPoint lh, OT_ControlPoint rh);
+OT_ControlPoint OT_sub_cp(OT_ControlPoint lh, OT_ControlPoint rh);
+bool OT_cp_equal(OT_ControlPoint lh, OT_ControlPoint rh);
+
+#endif // OPENTIME_CURVE_H
+
+#define IMPL_OPENTIME_CURVE
+#ifdef IMPL_OPENTIME_CURVE
+
+OT_ControlPoint OT_mul_cp(OT_ControlPoint cp, float val) {
+    return (OT_ControlPoint) { 
+        (OT_seconds) { cp.time.t * val }, 
+        (OT_seconds) { cp.value.t * val } }; }
+OT_ControlPoint OT_add_cp(OT_ControlPoint lh, OT_ControlPoint rh) {
+    return (OT_ControlPoint) { 
+        (OT_seconds) { lh.time.t + rh.time.t }, 
+        (OT_seconds) { lh.value.t + rh.value.t }}; }
+OT_ControlPoint OT_sub_cp(OT_ControlPoint lh, OT_ControlPoint rh) {
+    return (OT_ControlPoint) { 
+        (OT_seconds) { lh.time.t - rh.time.t },
+        (OT_seconds) { lh.value.t - rh.value.t }}; }
+bool OT_cp_equal(OT_ControlPoint lh, OT_ControlPoint rh) {
+    return (lh.time.t == rh.time.t) && (lh.value.t == rh.value.t); }
+
+#ifdef TESTING
+
+void test_control_points() {
+    {
+        // add
+        OT_ControlPoint cp1 = { { 0 }, { 10 } };
+        OT_ControlPoint cp2 = { { 20 }, { -10 } };
+        OT_ControlPoint test = {{ 20 }, { 0 } };
+        OT_ControlPoint result = OT_add_cp(cp1, cp2);
+        bool success = OT_cp_equal(test, result);
+    }
+    {
+        // sub
+        OT_ControlPoint cp1 = { { 0 }, { 10 } };
+        OT_ControlPoint cp2 = { { 20 }, { -10 } };
+        OT_ControlPoint test = {{ -20 }, { 0 } };
+        OT_ControlPoint result = OT_add_cp(cp1, cp2);
+        bool success = OT_cp_equal(test, result);
+    }
+    {
+        // mul 
+        OT_ControlPoint cp1 = { { 0 }, { 10 } };
+        float scale = -10;
+        OT_ControlPoint test = {{ 0 }, { -100 } };
+        OT_ControlPoint result = OT_mul_cp(cp1, scale);
+        bool success = OT_cp_equal(test, result);
+    }
+ }
+
+#endif // TESTING
+
+#endif // IMPL_OPENTIME_CURVE
+
 
 //------- opentimeline.h starts here
 #include <stddef.h>
