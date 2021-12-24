@@ -1,4 +1,229 @@
 
+#define TESTING
+
+//------- opentime.h starts here
+
+#include <math.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+typedef struct {
+    float t;
+} OT_seconds;
+
+typedef struct {
+    OT_seconds start;
+    OT_seconds end;
+} OT_TimeInterval;
+const OT_TimeInterval TimeInterval_default = { {0.f}, {INFINITY} };
+const OT_TimeInterval TimeInterval_continuum = {{-INFINITY}, {INFINITY}};
+
+struct OpenTimeInterfaceDetail;
+typedef struct OpenTimeInterfaceDetail OpenTimeInterfaceDetail;
+typedef struct OpenTimeInterface {
+    OpenTimeInterfaceDetail* detail;
+    void (*deinit)(struct OpenTimeInterface*);
+
+    // construction
+    OT_seconds (*duration)(OT_TimeInterval*);
+    OT_TimeInterval (*from_start_duration)(OT_seconds start, OT_seconds duration);
+    OT_TimeInterval (*from_start)(OT_seconds start);
+    
+    // Interval Algebra
+    bool (*interval_equals)(OT_TimeInterval* a, OT_TimeInterval* b);
+    bool (*interval_precedes)(OT_TimeInterval* a, OT_TimeInterval* b);
+    bool (*interval_meets)(OT_TimeInterval* a, OT_TimeInterval* b);
+    bool (*interval_starts)(OT_TimeInterval* a, OT_TimeInterval* b);
+    bool (*interval_overlaps)(OT_TimeInterval* a, OT_TimeInterval* b);
+    bool (*interval_starts_or_overlaps)(OT_TimeInterval* a, OT_TimeInterval* b);
+    bool (*interval_during)(OT_TimeInterval* a, OT_TimeInterval* b);
+    bool (*interval_ends)(OT_TimeInterval* a, OT_TimeInterval* b);
+    bool (*interval_disjoint)(OT_TimeInterval* a, OT_TimeInterval* b);
+    bool (*interval_within)(OT_TimeInterval* a, OT_TimeInterval* b);
+} OpenTimeInterface;
+
+typedef struct {
+    void* (*malloc)(size_t);
+    void (*free)(void*);
+} OpenTimeAllocator;
+
+OpenTimeInterface* opentime_create(OpenTimeAllocator*);
+
+#define IMPL_OPENTIME
+#ifdef IMPL_OPENTIME
+
+struct OpenTimeInterfaceDetail {
+    OpenTimeAllocator* alloc;
+};
+
+void ot_deinit(OpenTimeInterface* ot) {
+    if (!ot || !ot->detail)
+        return;
+
+    ot->detail->alloc->free(ot);
+}
+
+OT_seconds ot_duration(OT_TimeInterval* ival) {
+    if (!ival)
+        return (OT_seconds){ 0.f };
+
+    if (!isfinite(ival->start.t) || !isfinite(ival->end.t))
+        return (OT_seconds){INFINITY};
+
+    return (OT_seconds){ ival->end.t - ival->start.t };
+}
+
+OT_TimeInterval ot_from_start_duration(OT_seconds start, OT_seconds duration) {
+    if (duration.t <= 0)
+        return (OT_TimeInterval){ { start.t + duration.t }, { -duration.t } };
+    return (OT_TimeInterval){ start.t, { start.t + duration.t }};
+}
+
+bool ot_interval_equals(OT_TimeInterval* a, OT_TimeInterval* b) {
+    if (!a || !b)
+        return false;
+
+    return (a->start.t == b->start.t) && (a->end.t == b->end.t);
+}
+
+bool ot_interval_precedes(OT_TimeInterval* a, OT_TimeInterval* b) {
+    if (!a || !b)
+        return false;
+
+    return (b->start.t > a->end.t);
+}
+
+bool ot_interval_meets(OT_TimeInterval* a, OT_TimeInterval* b) {
+    if (!a || !b)
+        return false;
+
+    return (a->end.t == b->start.t);
+}
+
+bool ot_interval_disjoint(OT_TimeInterval* a, OT_TimeInterval* b) {
+    if (!a || !b)
+        return false;
+
+    return (a->end.t < b->start.t) ||
+        (b->end.t < a->start.t);
+}
+
+bool ot_interval_starts(OT_TimeInterval* a, OT_TimeInterval* b) {
+    if (!a || !b)
+        return false;
+
+    return (a->start.t == b->start.t) &&
+        (a->end.t < b->start.t);
+}
+
+bool ot_interval_ends(OT_TimeInterval* a, OT_TimeInterval* b) {
+    if (!a || !b)
+        return false;
+
+    return (a->start.t > b->start.t) &&
+        (a->end.t == b->start.t);
+}
+
+bool ot_interval_overlaps(OT_TimeInterval* a, OT_TimeInterval* b) {
+    if (!a || !b)
+        return false;
+
+    return (a->start.t < b->start.t) &&
+        (a->end.t < b->start.t);
+}
+
+bool ot_interval_starts_or_overlaps(OT_TimeInterval* a, OT_TimeInterval* b) {
+    if (!a || !b)
+        return false;
+
+    return (a->start.t <= b->start.t) &&
+        (a->end.t > b->start.t);
+}
+
+bool ot_interval_during(OT_TimeInterval* a, OT_TimeInterval* b) {
+    if (!a || !b)
+        return false;
+
+    return (a->start.t > b->start.t) &&
+        (a->end.t < b->start.t);
+}
+
+bool ot_interval_within(OT_TimeInterval* a, OT_TimeInterval* b) {
+    if (!a || !b)
+        return false;
+
+    return (a->start.t >= b->start.t) &&
+        (a->end.t < b->start.t) && !ot_interval_equals(a, b);
+}
+
+
+OT_TimeInterval ot_from_start(OT_seconds start) {
+    return (OT_TimeInterval){ start, { INFINITY } };
+}
+
+OpenTimeInterface* opentime_create(OpenTimeAllocator* alloc) {
+    if (!alloc)
+        return NULL;
+
+    OpenTimeInterface* ot = (OpenTimeInterface*) alloc->malloc(sizeof(OpenTimeInterface));
+    ot->detail = (OpenTimeInterfaceDetail*) alloc->malloc(sizeof(OpenTimeInterfaceDetail));
+    ot->detail->alloc = alloc;
+    ot->deinit = ot_deinit;
+    ot->duration = ot_duration;
+    ot->from_start_duration = ot_from_start_duration;
+    ot->from_start = ot_from_start;
+    ot->interval_equals = ot_interval_equals;
+    ot->interval_precedes = ot_interval_precedes;
+    ot->interval_meets = ot_interval_meets;
+    ot->interval_starts = ot_interval_starts;
+    ot->interval_overlaps = ot_interval_overlaps;
+    ot->interval_starts_or_overlaps = ot_interval_starts_or_overlaps;
+    ot->interval_during = ot_interval_during;
+    ot->interval_ends = ot_interval_ends;
+    ot->interval_disjoint = ot_interval_disjoint;
+    ot->interval_within = ot_interval_within;
+    return ot;
+}
+
+#ifdef TESTING
+#include <stdlib.h>
+
+void test_opentime() {
+    OpenTimeAllocator alloc = { .malloc = malloc, .free = free };
+    OpenTimeInterface* ot = opentime_create(&alloc);
+    {
+        OT_TimeInterval ival = { {10.f}, {20.f} };
+        OT_TimeInterval tval = ot->from_start_duration((OT_seconds){10.f}, (OT_seconds){10.f});
+        bool success = ot->interval_equals(&ival, &tval) == true;
+    }
+    {
+        OT_TimeInterval ival = { {10.f}, {20.f} };
+        OT_TimeInterval tval = ot->from_start((OT_seconds){0.f});
+        bool success = ot->interval_starts_or_overlaps(&ival, &tval) == false;
+        tval = ot->from_start((OT_seconds){10.f});
+        success = ot->interval_starts_or_overlaps(&ival, &tval) == true;
+        tval = ot->from_start((OT_seconds){15.f});
+        success = ot->interval_starts_or_overlaps(&ival, &tval) == true;
+        tval = ot->from_start((OT_seconds){20.f});
+        success = ot->interval_starts_or_overlaps(&ival, &tval) == false;
+        tval = ot_from_start((OT_seconds){25.f});
+        success = ot->interval_starts_or_overlaps(&ival, &tval) == false;
+        tval = ot_from_start((OT_seconds){-INFINITY});
+        success = ot->interval_starts_or_overlaps(&ival, &tval) == false;
+        tval = ot_from_start((OT_seconds){INFINITY});
+        success = ot->interval_starts_or_overlaps(&ival, &tval) == false;
+    }
+
+    ot->deinit(ot);
+}
+
+#endif // TESTING
+
+
+#endif // IMPL_OPENTIME
+
+//------- opentimeline.h starts here
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -12,8 +237,9 @@ typedef struct {
     IntervalOidId self;
     IntervalOidId seq;
     IntervalOidId sync;
+    OT_TimeInterval ti;
 } IntervalOid;
-const IntervalOid IntervalOid_default = {{0}, {0}, {0}};
+const IntervalOid IntervalOid_default = {{0}, {0}, {0}, {{0}, {INFINITY}}};
 
 struct TimelineTopologyDetail;
 typedef struct TimelineTopologyDetail TimelineTopologyDetail;
@@ -30,7 +256,7 @@ struct TimelineTopology {
     void (*add_seqs)(TimelineTopology* self, IntervalOidId parent, 
             IntervalOidId* first, IntervalOidId* last);
     
-    void* detail;
+    TimelineTopologyDetail* detail;
 };
 
 typedef struct {
@@ -46,7 +272,6 @@ timeline_topology_create(
 #define OPENTIMELINE_IMPL
 #ifdef OPENTIMELINE_IMPL
 
-#define TESTING
 #ifdef TESTING
 #include <stdlib.h>
 #endif
@@ -160,8 +385,10 @@ timeline_topology_create(
     detail->timeline_data = 
         (IntervalOid*) alloc->malloc(sizeof(IntervalOid) * (1 + initial_capacity));
     memset(detail->timeline_data, 0, sizeof(IntervalOid) * (1 + initial_capacity));
-    for (int i = 0; i < initial_capacity; ++i)
+    for (int i = 0; i < initial_capacity; ++i) {
         detail->timeline_data[i].self.id = i;
+        detail->timeline_data[i].ti = TimeInterval_default;
+    }
 
     topo->detail = (void*) detail;
     detail->next_available = 1;
@@ -197,7 +424,7 @@ void test_creation() {
     }
 }
 
-#endif
+#endif // TESTING
 
 
 int main(int argc, char** argv) {
