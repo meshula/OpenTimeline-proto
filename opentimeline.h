@@ -16,8 +16,14 @@ typedef struct {
     OT_seconds start;
     OT_seconds end;
 } OT_TimeInterval;
-const OT_TimeInterval TimeInterval_default = { {0.f}, {INFINITY} };
-const OT_TimeInterval TimeInterval_continuum = {{-INFINITY}, {INFINITY}};
+const OT_TimeInterval OT_TimeInterval_default = { {0.f}, {INFINITY} };
+const OT_TimeInterval OT_TimeInterval_continuum = {{-INFINITY}, {INFINITY}};
+
+typedef struct {
+    OT_seconds t;
+    float s;
+} OT_TimeAffineTransform;
+const OT_TimeAffineTransform OT_TimeAffineTransform_default = { {0.f}, 1.f };
 
 struct OpenTimeInterfaceDetail;
 typedef struct OpenTimeInterfaceDetail OpenTimeInterfaceDetail;
@@ -29,7 +35,13 @@ typedef struct OpenTimeInterface {
     OT_seconds (*duration)(OT_TimeInterval*);
     OT_TimeInterval (*from_start_duration)(OT_seconds start, OT_seconds duration);
     OT_TimeInterval (*from_start)(OT_seconds start);
-    
+
+    // transforms
+    OT_seconds (*transform_seconds)(OT_TimeAffineTransform*, OT_seconds*);
+    OT_TimeInterval (*transform_interval)(OT_TimeAffineTransform*, OT_TimeInterval*);
+    OT_TimeAffineTransform (*compose_transform)(OT_TimeAffineTransform*, OT_TimeAffineTransform*);
+    OT_TimeAffineTransform (*invert_transform)(OT_TimeAffineTransform*);
+
     // Interval Algebra
     bool (*interval_equals)(OT_TimeInterval* a, OT_TimeInterval* b);
     bool (*interval_precedes)(OT_TimeInterval* a, OT_TimeInterval* b);
@@ -80,6 +92,37 @@ OT_TimeInterval ot_from_start_duration(OT_seconds start, OT_seconds duration) {
     return (OT_TimeInterval){ start.t, { start.t + duration.t }};
 }
 
+OT_seconds ot_transform_seconds(OT_TimeAffineTransform* x, OT_seconds* s) {
+    if (!x || !s)
+        return (OT_seconds) { 0.f };
+
+    return (OT_seconds) { s->t * x->s + x->t.t };
+}
+
+OT_TimeInterval ot_transform_interval(OT_TimeAffineTransform* x, OT_TimeInterval* ti) {
+    if (!x || !ti)
+        return OT_TimeInterval_default;
+
+    return (OT_TimeInterval) { 
+        ot_transform_seconds(x, &ti->start), ot_transform_seconds(x, &ti->end) };
+}
+
+OT_TimeAffineTransform ot_compose_transform(OT_TimeAffineTransform* x1,
+        OT_TimeAffineTransform* x2) {
+    if (!x1 || !x2)
+        return OT_TimeAffineTransform_default;
+
+    return (OT_TimeAffineTransform) {
+        ot_transform_seconds(x1, &x2->t),
+        x1->s * x2->s };
+}
+
+OT_TimeAffineTransform ot_invert_transform(OT_TimeAffineTransform* x) {
+    return (OT_TimeAffineTransform) {
+        (OT_seconds) { -x->t.t / x->s },
+        1.f / x->s };
+}
+ 
 bool ot_interval_equals(OT_TimeInterval* a, OT_TimeInterval* b) {
     if (!a || !b)
         return false;
@@ -173,6 +216,10 @@ OpenTimeInterface* opentime_create(OpenTimeAllocator* alloc) {
     ot->duration = ot_duration;
     ot->from_start_duration = ot_from_start_duration;
     ot->from_start = ot_from_start;
+    ot->transform_seconds = ot_transform_seconds;
+    ot->transform_interval = ot_transform_interval;
+    ot->compose_transform = ot_compose_transform;
+    ot->invert_transform = ot_invert_transform;
     ot->interval_equals = ot_interval_equals;
     ot->interval_precedes = ot_interval_precedes;
     ot->interval_meets = ot_interval_meets;
@@ -213,6 +260,40 @@ void test_opentime() {
         success = ot->interval_starts_or_overlaps(&ival, &tval) == false;
         tval = ot_from_start((OT_seconds){INFINITY});
         success = ot->interval_starts_or_overlaps(&ival, &tval) == false;
+    }
+    {
+        // offset test
+        OT_TimeInterval cti = { { 10.f}, {20.f } };
+        OT_TimeAffineTransform xform = { { 10.f }, 1.f };
+        OT_TimeInterval result = ot->transform_interval(&xform, &cti);
+        OT_TimeInterval tval = { {20.f}, {30.f} };
+        bool success = ot->interval_equals(&tval, &result) == true;
+        success = ot->duration(&result).t == 10.f;
+        success = ot->duration(&result).t == ot->duration(&cti).t;
+        OT_TimeAffineTransform xform2 = ot->compose_transform(&xform, &xform);
+        success = (xform.t.t == 20.f) && (xform.s == 1.f);
+    }
+    {
+        // scale test
+        OT_TimeInterval cti = { { 10.f}, {20.f } };
+        OT_TimeAffineTransform xform = { { 10.f }, 2.f };
+        OT_TimeInterval result = ot->transform_interval(&xform, &cti);
+        OT_TimeInterval tval = { {30.f}, {50.f} };
+        bool success = ot->interval_equals(&tval, &result) == true;
+        success = ot->duration(&result).t == ot->duration(&cti).t * xform.s;
+        OT_TimeAffineTransform xform2 = ot->compose_transform(&xform, &xform);
+        success = (xform.t.t == 30.f) && (xform.s == 4.f);
+    }
+    {
+        // invert test
+        OT_TimeAffineTransform xform = { { 10.f }, 2.f };
+        OT_TimeAffineTransform inv = ot->invert_transform(&xform);
+        OT_TimeAffineTransform identity = ot->compose_transform(&xform, &inv);
+        bool success = (identity.t.t == 0.f) && (identity.s == 1);
+        OT_seconds pt = { 10.f };
+        OT_seconds result = ot->transform_seconds(&xform, &pt);
+        result = ot->transform_seconds(&inv, &result);
+        success = pt.t == result.t;
     }
 
     ot->deinit(ot);
@@ -387,7 +468,7 @@ timeline_topology_create(
     memset(detail->timeline_data, 0, sizeof(IntervalOid) * (1 + initial_capacity));
     for (int i = 0; i < initial_capacity; ++i) {
         detail->timeline_data[i].self.id = i;
-        detail->timeline_data[i].ti = TimeInterval_default;
+        detail->timeline_data[i].ti = OT_TimeInterval_default;
     }
 
     topo->detail = (void*) detail;
