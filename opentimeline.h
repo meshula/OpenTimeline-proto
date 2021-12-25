@@ -5,6 +5,7 @@
 #ifndef OPENTIME_PROTO_H
 #define OPENTIME_PROTO_H
 
+#include <float.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -322,6 +323,7 @@ OT_ControlPoint OT_mul_cp(OT_ControlPoint cp, float val);
 OT_ControlPoint OT_add_cp(OT_ControlPoint lh, OT_ControlPoint rh);
 OT_ControlPoint OT_sub_cp(OT_ControlPoint lh, OT_ControlPoint rh);
 bool OT_cp_equal(OT_ControlPoint lh, OT_ControlPoint rh);
+OT_ControlPoint OT_lerp_cp(float u, OT_ControlPoint a, OT_ControlPoint b);
 
 #endif // OPENTIME_CURVE_H
 
@@ -342,6 +344,159 @@ OT_ControlPoint OT_sub_cp(OT_ControlPoint lh, OT_ControlPoint rh) {
         (OT_seconds) { lh.value.t - rh.value.t }}; }
 bool OT_cp_equal(OT_ControlPoint lh, OT_ControlPoint rh) {
     return (lh.time.t == rh.time.t) && (lh.value.t == rh.value.t); }
+
+OT_ControlPoint OT_lerp_cp(float u, OT_ControlPoint a, OT_ControlPoint b) {
+    OT_ControlPoint result = {
+        { a.time.t * (1.f - u) + b.time.t * u },
+        { a.value.t * (1.f - u) + b.value.t * u } };
+    return result;
+}
+float lerp_f(float u, float a, float b) {
+    return a * (1.f - u) + b * u;
+}
+float inv_lerp_f(float u, float a, float b) {
+    if (a == b)
+        return a;
+    return (u - a) / (b - a);
+}
+
+float value_at_time_between(float t, OT_ControlPoint fst, OT_ControlPoint snd) {
+    float u = inv_lerp_f(t, fst.time.t, snd.time.t);
+    return lerp_f(u, fst.value.t, snd.value.t);
+}
+
+// evaluate a 1d bezier whose first point is 0.
+float _bezier0(float unorm, float p2, float p3, float p4)
+{
+    const float p1 = 0.0f;
+    const float z = unorm;
+    const float z2 = z * z;
+    const float z3 = z2 * z;
+
+    const float zmo = z - 1.0f;
+    const float zmo2 = zmo * zmo;
+    const float zmo3 = zmo2 * zmo;
+
+    return (p4 * z3) 
+        - (p3 * (3.0f * z2 * zmo))
+        + (p2 * (3.0f * z * zmo2))
+        - (p1 * zmo3);
+}
+
+//
+// Given x in the interval [0, p3], and a monotonically nondecreasing
+// 1-D Bezier curve, B(u), with control points (0, p1, p2, p3), find
+// u so that B(u) == x.
+//
+
+float _findU(float x, float p1, float p2, float p3)
+{
+    const float MAX_ABS_ERROR = FLT_EPSILON * 2.0f;
+    const int MAX_ITERATIONS = 45;
+
+    if (x <= 0.f) {
+        return 0.f;
+    }
+
+    if (x >= p3) {
+        return 1.f;
+    }
+
+    float _u1 = 0.f;
+    float _u2 = 0.f;
+    float x1 = -x; // same as: bezier0 (0, p1, p2, p3) - x;
+    float x2 = p3 - x; // same as: bezier0 (1, p1, p2, p3) - x;
+
+    {
+        const float _u3 = 1.0f - x2 / (x2 - x1);
+        const float x3 = _bezier0(_u3, p1, p2, p3) - x;
+
+        if (x3 == 0.f)
+            return _u3;
+
+        if (x3 < 0.f)
+        {
+            if (1.0f - _u3 <= MAX_ABS_ERROR) {
+                if (x2 < -x3)
+                    return 1.0f;
+                return _u3;
+            }
+
+            _u1 = 1.0f;
+            x1 = x2;
+        }
+        else
+        {
+            _u1 = 0.0f;
+            x1 = x1 * x2 / (x2 + x3);
+
+            if (_u3 <= MAX_ABS_ERROR) {
+                if (-x1 < x3)
+                    return 0.0f;
+                return _u3;
+            }
+        }
+        _u2 = _u3;
+        x2 = x3;
+    }
+
+    int i = MAX_ITERATIONS - 1;
+
+    while (i > 0)
+    {
+        i -= 1;
+        const float _u3 = _u2 - x2 * ((_u2 - _u1) / (x2 - x1));
+        const float x3 = _bezier0 (_u3, p1, p2, p3) - x;
+
+        if (x3 == 0)
+            return _u3;
+
+        if (x2 * x3 <= 0)
+        {
+            _u1 = _u2;
+            x1 = x2;
+        }
+        else
+        {
+            x1 = x1 * x2 / (x2 + x3);
+        }
+
+        _u2 = _u3;
+        x2 = x3;
+
+        if (_u2 > _u1)
+        {
+            if (_u2 - _u1 <= MAX_ABS_ERROR)
+                break;
+        }
+        else
+        {
+            if (_u1 - _u2 <= MAX_ABS_ERROR)
+                break;
+        }
+    }
+
+    if (x1 < 0)
+        x1 = -x1;
+    if (x2 < 0)
+        x2 = -x2;
+
+    if (x1 < x2)
+        return _u1;
+    return _u2;
+}
+
+//
+// Given x in the interval [p0, p3], and a monotonically nondecreasing
+// 1-D Bezier curve, B(u), with control points (p0, p1, p2, p3), find
+// u so that B(u) == x.
+//
+float findU(float x, float p0, float p1, float p2, float p3)
+{
+    return _findU(x - p0, p1 - p0, p2 - p0, p3 - p0);
+}
+
+
 
 #ifdef TESTING
 
@@ -369,6 +524,27 @@ void test_control_points() {
         OT_ControlPoint test = {{ 0 }, { -100 } };
         OT_ControlPoint result = OT_mul_cp(cp1, scale);
         bool success = OT_cp_equal(test, result);
+    }
+    {
+        // lerp
+        OT_ControlPoint fst = {{ 0 }, { 0 }};
+        OT_ControlPoint snd = {{ 1 }, { 1 }};
+        bool success;
+        success = OT_lerp_cp(0.00f, fst, snd).value.t == 0.00f;
+        success = OT_lerp_cp(0.25f, fst, snd).value.t == 0.25f;
+        success = OT_lerp_cp(0.50f, fst, snd).value.t == 0.50f;
+        success = OT_lerp_cp(0.75f, fst, snd).value.t == 0.75f;
+        success = OT_lerp_cp(0.00f, fst, snd).time.t == 0.00f;
+        success = OT_lerp_cp(0.25f, fst, snd).time.t == 0.25f;
+        success = OT_lerp_cp(0.50f, fst, snd).time.t == 0.50f;
+        success = OT_lerp_cp(0.75f, fst, snd).time.t == 0.75f;
+    }
+    {
+        bool success;
+        success = findU(0.f, 0.f, 1.f, 2.f, 3.f) == 0.f;
+        // out of range values are clamped
+        success = findU(-1.f, 0.f, 1.f, 2.f, 3.f) == 0.f;
+        success = findU(1.f, 0.f, 1.f, 2.f, 3.f) == 1.f;
     }
  }
 
