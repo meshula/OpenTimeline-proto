@@ -325,10 +325,65 @@ OT_ControlPoint OT_sub_cp(OT_ControlPoint lh, OT_ControlPoint rh);
 bool OT_cp_equal(OT_ControlPoint lh, OT_ControlPoint rh);
 OT_ControlPoint OT_lerp_cp(float u, OT_ControlPoint a, OT_ControlPoint b);
 
+typedef struct TimeCurveLinear {
+    OT_ControlPoint* knots;
+} TimeCurveLinear;
+
+typedef struct {
+    void* (*malloc)(size_t);
+    void (*free)(void*);
+} CurveAllocator;
+
+
+typedef struct CurveInterface {
+    CurveAllocator* alloc;
+    void (*deinit)(struct CurveInterface*);
+
+    TimeCurveLinear* (*tcl_init_with_knots)(struct CurveInterface*, OT_ControlPoint* knots, int count);
+    void (*tcl_deinit)(struct CurveInterface*, TimeCurveLinear*);
+} CurveInterface;
+
+CurveInterface* curve_interface_create(CurveAllocator*);
+
+
 #endif // OPENTIME_CURVE_H
 
 #define IMPL_OPENTIME_CURVE
 #ifdef IMPL_OPENTIME_CURVE
+
+#include "cvector.h"
+
+TimeCurveLinear* ot_tcl_init_with_knots(CurveInterface* ci, OT_ControlPoint* knots_in, int count) {
+    OT_ControlPoint* knots = NULL;
+    cvector_grow(knots, count);
+    for (int i = 0; i < count; ++i) {
+        cvector_push_back(knots, knots_in[i]);
+    }
+    TimeCurveLinear* tcl = (TimeCurveLinear*) ci->alloc->malloc(sizeof(TimeCurveLinear));
+    tcl->knots = knots;
+    return tcl;
+}
+
+void ot_tcl_deinit(CurveInterface* ci, TimeCurveLinear* tcl) {
+    if (!tcl || !ci || !ci->alloc)
+        return;
+
+    cvector_free(tcl->knots);
+    ci->alloc->free(tcl);
+}
+
+
+
+CurveInterface* curve_interface_create(CurveAllocator* alloc) {
+    if (!alloc)
+        return NULL;
+    CurveInterface* ci = (CurveInterface*) malloc(sizeof(CurveInterface));
+    ci->tcl_init_with_knots = ot_tcl_init_with_knots;
+    ci->tcl_deinit = ot_tcl_deinit;
+    return ci;
+}
+
+
 
 OT_ControlPoint OT_mul_cp(OT_ControlPoint cp, float val) {
     return (OT_ControlPoint) { 
