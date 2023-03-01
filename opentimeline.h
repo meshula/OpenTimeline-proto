@@ -324,6 +324,7 @@ OT_ControlPoint OT_add_cp(OT_ControlPoint lh, OT_ControlPoint rh);
 OT_ControlPoint OT_sub_cp(OT_ControlPoint lh, OT_ControlPoint rh);
 bool OT_cp_equal(OT_ControlPoint lh, OT_ControlPoint rh);
 OT_ControlPoint OT_lerp_cp(float u, OT_ControlPoint a, OT_ControlPoint b);
+float value_at_time_between(float t, OT_ControlPoint fst, OT_ControlPoint snd);
 
 typedef struct TimeCurveLinear {
     OT_ControlPoint* knots;
@@ -334,13 +335,24 @@ typedef struct {
     void (*free)(void*);
 } CurveAllocator;
 
+typedef enum {
+    EvalOK, EvalOutOfBounds } EvalResult;
+
+typedef struct {
+    float val;
+    EvalResult err;
+} EvalFloatResult;
 
 typedef struct CurveInterface {
     CurveAllocator* alloc;
     void (*deinit)(struct CurveInterface*);
 
     TimeCurveLinear* (*tcl_init_with_knots)(struct CurveInterface*, OT_ControlPoint* knots, int count);
+    TimeCurveLinear* (*tcl_init_identity)(struct CurveInterface*, float* times, int count);
     void (*tcl_deinit)(struct CurveInterface*, TimeCurveLinear*);
+    EvalFloatResult (*tcl_eval)(struct CurveInterface*, TimeCurveLinear*, float t);
+    int (*tcl_nearest_smaller_knot_index)(TimeCurveLinear*, float t);
+    OT_ControlPoint[2] (*tcl_extents)(TimeCurveLinear*);
 } CurveInterface;
 
 CurveInterface* curve_interface_create(CurveAllocator*);
@@ -354,10 +366,28 @@ CurveInterface* curve_interface_create(CurveAllocator*);
 #include "cvector.h"
 
 TimeCurveLinear* ot_tcl_init_with_knots(CurveInterface* ci, OT_ControlPoint* knots_in, int count) {
+    if (!ci || !ci->alloc)
+        return NULL;
+
     OT_ControlPoint* knots = NULL;
     cvector_grow(knots, count);
     for (int i = 0; i < count; ++i) {
         cvector_push_back(knots, knots_in[i]);
+    }
+    TimeCurveLinear* tcl = (TimeCurveLinear*) ci->alloc->malloc(sizeof(TimeCurveLinear));
+    tcl->knots = knots;
+    return tcl;
+}
+
+TimeCurveLinear* ot_tcl_init_identity(CurveInterface* ci, float* times_in, int count) {
+    if (!ci || !ci->alloc)
+        return NULL;
+    
+    OT_ControlPoint* knots = NULL;
+    cvector_grow(knots, count);
+    for (int i = 0; i < count; ++i) {
+        OT_ControlPoint p = { times_in[i], times_in[i] };
+        cvector_push_back(knots, p);
     }
     TimeCurveLinear* tcl = (TimeCurveLinear*) ci->alloc->malloc(sizeof(TimeCurveLinear));
     tcl->knots = knots;
@@ -372,6 +402,167 @@ void ot_tcl_deinit(CurveInterface* ci, TimeCurveLinear* tcl) {
     ci->alloc->free(tcl);
 }
 
+OT_ControlPoint[2] ot_tcl_extents(TimeCurveLinear* self) {
+    OT_ControlPoint[2] result = { self->knots[0], self->knots[0] };
+    int sz = cvector_size(self->knots);
+    for (int i = 0; i < sz; ++i) {
+        if (self->knots[i].value.t < result[0].value.t)
+            result[0].value.t = self->knots[i].value.t;
+        if (self->knots[i].time.t < result[0].time.t)
+            result[0].time.t = self->knots[i].time.t;
+        if (self->knots[i].value.t > result[1].value.t)
+            result[1].value.t = self->knots[i].value.t;
+        if (self->knots[i].time.t > result[1].time.t)
+            result[1].time.t = self->knots[i].time.t;
+    }
+    return result;
+}
+
+EvalFloatResult ot_tcl_eval(CurveInterface* ci, TimeCurveLinear* tcl, float t) {
+    int idx = ci->tcl_nearest_smaller_knot_index(tcl, t);
+    if (idx < 0)
+        return (EvalFloatResult) { 0, EvalOutOfBounds };
+    return (EvalFloatResult) {
+        value_at_time_between(t, tcl->knots[idx], tcl->knots[idx+1]),
+                EvalOK };
+}
+
+int ot_tcl_nearest_smaller_knot_index(TimeCurveLinear* tcl, float t) {
+    int sz = cvector_size(tcl->knots);
+    if ((sz == 0) ||
+       (t < tcl->knots[0].time.t) ||
+       (t >= tcl->knots[sz - 1].time.t)) {
+        return -1;
+    }
+
+    for (int i = 0; i < sz - 1; ++i) {
+        if (tcl->knots[i].time.t <= t && t < tcl->knots[i+1].time.t)
+            return i;
+    }
+    if (tcl->knots[sz - 1].time.t == t)
+        return sz - 1;
+    return -1;
+}
+
+/// project another curve through this one.  A curve maps 'time' to 'value'
+/// parameters.  if curve self is v_self(t_self), and curve other is 
+/// v_other(t_other) and other is being projected through self, the result
+/// function is v_self(v_other(t_other)).  This maps the the v_other value
+/// to the t_self parameter.
+///
+/// curve self:
+/// 
+/// v_self
+/// |  /
+/// | /
+/// |/
+/// +--- t_self
+///
+/// curve other:
+///   
+///  v_other
+/// |      ,-'
+/// |   ,-'
+/// |,-'
+/// +---------- t_other
+///
+/// @TODO finish this doc
+///
+TimeCurveLinear* ot_project_curve(
+        /// curve being projected _through_
+        TimeCurveLinear* self,
+        /// curve being projected
+        TimeCurveLinear* other
+        ) 
+{
+    const other_bounds = other.extents();
+    var other_copy = TimeCurveLinear.init(other.knots) catch unreachable;
+
+    // find all knots in self that are within the other bounds
+    for (self.knots)
+        |self_knot| 
+        {
+            if (
+                    _is_between(
+                        self_knot.time,
+                        other_bounds[0].value,
+                        other_bounds[1].value
+                        )
+               ) {
+                // @TODO: not sure how to do this in place?
+                other_copy = other_copy.split_at_each_value(self_knot.time);
+            }
+        }
+
+    // split other into curves where it goes in and out of the domain of self
+    var curves_to_project = std.ArrayList(TimeCurveLinear).init(ALLOCATOR);
+    const self_bounds = self.extents();
+    var last_index: i32 = -10;
+    var current_curve = std.ArrayList(ControlPoint).init(ALLOCATOR);
+    for (other_copy.knots) 
+        |other_knot, index| 
+        {
+            if (
+                    self_bounds[0].time <= other_knot.value 
+                    and other_knot.value <= self_bounds[1].time
+               ) 
+            {
+                if (index != last_index+1) {
+                    // curves of less than one point are trimmed, because they
+                    // have no duration, and therefore are not modelled in our
+                    // system.
+                    if (current_curve.items.len > 1) {
+                        curves_to_project.append(
+                                TimeCurveLinear.init(
+                                    current_curve.items
+                                    ) catch unreachable
+                                ) catch unreachable;
+                    }
+                    current_curve = std.ArrayList(ControlPoint).init(ALLOCATOR);
+                }
+
+                current_curve.append(other_knot) catch unreachable;
+                last_index = @intCast(i32, index);
+            }
+        }
+    if (current_curve.items.len > 1) {
+        curves_to_project.append(
+                TimeCurveLinear.init(current_curve.items) catch unreachable
+                ) catch unreachable;
+    }
+
+    if (curves_to_project.items.len == 0) {
+        return &[_]TimeCurveLinear{};
+    }
+
+    for (curves_to_project.items) 
+        |crv| 
+        {
+            // project each knot
+            for (crv.knots) 
+                |knot, index| 
+                {
+                    // 2. evaluate grows a parameter to treat endpoint as in bounds
+                    // 3. check outside of evaluate if it sits on a knot and use
+                    //    the value rathe rthan computing
+                    // 4. catch the error and call a different function or do a
+                    //    check in that case
+                    const value = self.evaluate(knot.value) catch (
+                            if (self.knots[self.knots.len-1].time == knot.value) 
+                            self.knots[self.knots.len-1].value 
+                            else unreachable
+                            );
+                    crv.knots[index] = .{
+                        .time = knot.time,
+                            // this will error out trying to project the last endpoint
+                            // .value = self.evaluate(knot.value) catch unreachable
+                            .value = value
+                    };
+                }
+        }
+
+    return curves_to_project.items;
+}
 
 
 CurveInterface* curve_interface_create(CurveAllocator* alloc) {
@@ -379,7 +570,11 @@ CurveInterface* curve_interface_create(CurveAllocator* alloc) {
         return NULL;
     CurveInterface* ci = (CurveInterface*) malloc(sizeof(CurveInterface));
     ci->tcl_init_with_knots = ot_tcl_init_with_knots;
+    ci->tcl_init_identity = ot_tcl_init_identity;
+    ci->tcl_eval = ot_tcl_eval;
     ci->tcl_deinit = ot_tcl_deinit;
+    ci->tcl_nearest_smaller_knot_index = ot_tcl_nearest_smaller_knot_index;
+    ci->tcl_extents = ot_tcl_extents;
     return ci;
 }
 
@@ -623,11 +818,12 @@ typedef struct {
     IntervalOidId seq;
     IntervalOidId sync;
     OT_TimeAffineTransform basis;
+    bool reset_transform;
     OT_TimeInterval bounds;
     //OT_TImeCurve mapping;
 } IntervalOid;
 const IntervalOid IntervalOid_default = {{0}, {0}, {0},
-    { {0}, 1.f }, 
+    { {0}, 1.f }, false,
     {{0}, {INFINITY}}};
 
 struct TimelineTopologyDetail;
